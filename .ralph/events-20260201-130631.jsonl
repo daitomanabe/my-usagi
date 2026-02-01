@@ -12,3 +12,5 @@
 {"payload":"AI integration plan ready - delegate to AI Integrator for Whisper ASR, Llama LLM, TTS, kuromoji implementation","topic":"plan.ready.ai","ts":"2026-02-01T13:16:31.921484+00:00"}
 {"payload":"AI integration plan complete. Delegate to AI Integrator for Whisper ASR, Llama LLM, TTS, and kuromoji implementation. See specs/phase2-plan.md for detailed specifications.","topic":"plan.ready.ai","ts":"2026-02-01T13:17:11.874607+00:00"}
 {"payload":"AI integration plan complete. Delegate to AI Integrator for Whisper ASR, Llama LLM, TTS, and kuromoji implementation. See specs/phase2-plan.md for detailed specifications.","topic":"plan.ready.ai","ts":"2026-02-01T13:17:50.120687+00:00"}
+{"payload":"AI integration complete: Whisper ASR, Llama LLM, TTS placeholder","topic":"ai.done","ts":"2026-02-01T13:20:50.368966+00:00"}
+{"payload":"PWA enhancement complete: Service Worker caching, network status, install prompt","topic":"pwa.done","ts":"2026-02-01T13:20:50.374657+00:00"}
