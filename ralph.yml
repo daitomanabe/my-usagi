@@ -16,41 +16,36 @@ hats:
   git_setup:
     name: "Git Setup"
     description: |
-      Git/GitHub初期化。失敗したら即LOOP_COMPLETE。
+      Git状態確認。変更があればコミット・プッシュ。
 
       実行手順:
-      1. gh auth status (認証確認、失敗→LOOP_COMPLETE)
+      1. gh auth status (認証確認)
       2. git status で状態確認
-      3. 変更があれば git add -A && git commit -m "[Ralph] Session start"
-      4. git push origin main
+      3. 変更があれば git add -A && git commit && git push
 
-      全て成功 → git.ready / いずれか失敗 → LOOP_COMPLETE
-
-      完了後:
-      1. .agent/iteration.log に記録
-      2. git add -A && git commit && git push
+      完了後: git.ready を発行
     triggers:
       - "work.start"
     publishes:
       - "git.ready"
       - "LOOP_COMPLETE"
 
-  architect:
-    name: "Architect"
+  planner:
+    name: "Planner"
     description: |
-      システム設計・API仕様策定。
+      Phase 2 タスク計画。
 
-      my-usagi固有の設計ポイント:
-      - 子ども向けUI: シンプル、大きなボタン、音声中心
-      - Cloudflare Workers + Durable Objects でセッション管理
-      - D1: 会話ログ・語彙データ
-      - R2: 音声ファイル（raw + TTSキャッシュ）
-      - Queues: 非同期解析
+      目標:
+      1. Cloudflare Workers AI でASR/LLM統合
+      2. TTS統合（Workers AI or 外部）
+      3. 日本語形態素解析（kuromoji-wasm）
+      4. Service Worker オフラインキャッシュ
+      5. PWAアイコン生成
+      6. デプロイ準備
 
       成果物:
-      - specs/api.md: エンドポイント定義
-      - specs/data-model.md: D1スキーマ
-      - specs/conversation-flow.md: 会話フロー
+      - specs/phase2-plan.md に実装計画
+      - 優先順位と依存関係を明確化
 
       完了後:
       1. .agent/iteration.log に記録
@@ -58,91 +53,93 @@ hats:
     triggers:
       - "git.ready"
     publishes:
-      - "specs.ready.backend"
-      - "specs.ready.frontend"
+      - "plan.ready.ai"
+      - "plan.ready.pwa"
 
-  backend:
-    name: "Backend Developer"
+  ai_integrator:
+    name: "AI Integrator"
     description: |
-      Cloudflare Workers バックエンド実装。
+      Cloudflare Workers AI 統合。
 
-      実装対象 (src/):
-      - index.ts: メインワーカー、ルーティング
-      - Durable Objects: 会話セッション管理
-      - D1操作: 会話ログ保存・取得
-      - R2操作: 音声ファイル保存・取得
-      - Queues: 非同期解析ジョブ
-      - Cron: 日次サマリ生成
+      実装対象:
+      1. ASR: @cf/openai/whisper で音声→テキスト
+      2. LLM: @cf/meta/llama-3.1-8b-instruct でウサギ応答生成
+         - 3歳向け安全なシステムプロンプト設計
+         - 日本語対応
+      3. TTS: Workers AI (利用可能な場合) or 外部API
+      4. 形態素解析: kuromoji-wasm で語彙抽出精度向上
 
-      安全性:
-      - 3歳向けLLM直結のリスク考慮
-      - プロンプトインジェクション対策
-      - 音声データのプライバシー保護
+      src/index.ts の該当箇所を更新:
+      - mockASR → Whisper API呼び出し
+      - mockLLM → Llama API呼び出し
+      - mockTTS → 実際のTTS生成
+      - tokenizeJaLoose → kuromoji
 
       完了後:
       1. .agent/iteration.log に記録
       2. git add -A && git commit && git push
     triggers:
-      - "specs.ready.backend"
-      - "review.backend.changes"
+      - "plan.ready.ai"
+      - "review.ai.changes"
     publishes:
-      - "backend.done"
+      - "ai.done"
 
-  frontend:
-    name: "Frontend Developer"
+  pwa_enhancer:
+    name: "PWA Enhancer"
     description: |
-      PWA フロントエンド実装。
+      PWA機能強化。
 
-      実装対象 (public/):
-      - 子ども向けUI (index.html, app.js, style.css)
-        - ウサギキャラクター表示
-        - 音声入力（MediaRecorder + サーバASR）
-        - 音声出力（TTS再生）
-        - シンプルで直感的な操作
-      - 親向けダッシュボード (parent/)
-        - 会話ログ閲覧
-        - 語彙発達グラフ
-        - ハイライト表示
-      - Service Worker (sw.js)
-      - Manifest (manifest.webmanifest)
+      実装対象:
+      1. Service Worker キャッシュ戦略
+         - 静的アセット（HTML/CSS/JS）のキャッシュ
+         - TTSオーディオのキャッシュ
+         - オフラインフォールバック
+      2. PWAアイコン生成
+         - 192x192, 512x512
+         - マスカブルアイコン
+         - manifest.webmanifest 更新
+      3. インストールプロンプト
+      4. オフライン対応UI
 
       完了後:
       1. .agent/iteration.log に記録
       2. git add -A && git commit && git push
     triggers:
-      - "specs.ready.frontend"
-      - "review.frontend.changes"
+      - "plan.ready.pwa"
+      - "review.pwa.changes"
     publishes:
-      - "frontend.done"
+      - "pwa.done"
 
-  integrator:
-    name: "Integrator"
+  deployer:
+    name: "Deployer"
     description: |
-      統合テスト・最終確認。
+      デプロイ準備と検証。
 
       確認項目:
-      - 子どもUI ↔ Workers API 疎通
-      - 音声録音 → ASR → LLM → TTS の一連フロー
-      - D1/R2 データ永続化
-      - 親ダッシュボードからのログ閲覧
-      - PWA オフライン動作
-      - wrangler dev でのローカル動作確認
+      - TypeScriptコンパイル
+      - wrangler.jsonc 設定確認
+      - D1マイグレーション手順確認
+      - 環境変数/シークレット一覧
+      - wrangler dev でローカル動作確認
+
+      成果物:
+      - DEPLOY_GUIDE.md（デプロイ手順書）
 
       問題発見時:
-      - backend問題 → review.backend.changes
-      - frontend問題 → review.frontend.changes
+      - AI問題 → review.ai.changes
+      - PWA問題 → review.pwa.changes
 
       完了後:
       1. .agent/iteration.log に記録
       2. git add -A && git commit && git push
 
       LOOP_COMPLETE発行時は追加で:
-      3. COMPLETION_REPORT.md を生成
+      3. COMPLETION_REPORT.md を更新
       4. 最終 git push
     triggers:
-      - "backend.done"
-      - "frontend.done"
+      - "ai.done"
+      - "pwa.done"
     publishes:
-      - "review.backend.changes"
-      - "review.frontend.changes"
+      - "review.ai.changes"
+      - "review.pwa.changes"
       - "LOOP_COMPLETE"
