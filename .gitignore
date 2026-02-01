@@ -1,9 +1,21 @@
 node_modules/
 dist/
 .wrangler/
+.DS_Store
+
+# Secrets - NEVER commit these
 .dev.vars
 .env
-.DS_Store
+.env.local
+.env.*.local
+*.secret
+secrets.json
+credentials.json
+
+# API keys pattern
+**/api-key*
+**/apikey*
+**/*_KEY*
 
 # Ralph (keep iteration.log and scratchpad for tracking)
 .agent/checkpoints/
