@@ -99,3 +99,53 @@ Decision:
 Next:
 - Awaiting backend.done event
 
+
+## Iteration: Backend Refactor (specs.ready.backend)
+
+### Changes Made
+1. **Database Schema**: Refactored to match specs
+   - sessions (was: profiles/sessions with different fields)
+   - conversation_turns (was: events)
+   - vocabulary (was: vocab_items)
+   - highlights (new)
+   - analysis_jobs (new)
+
+2. **API Endpoints**: Implemented per specs/api.md
+   - POST /api/session/start - Start new session, return greeting
+   - GET /api/session/:sessionId - Get session state
+   - POST /api/conversation/audio - Handle audio input (multipart/form-data)
+   - POST /api/conversation/text - Handle text input
+   - GET /api/parent/logs - Query conversation logs with filters
+   - GET /api/parent/vocabulary - Vocabulary growth analytics
+   - GET /api/parent/highlights - Notable moments
+
+3. **Durable Object**: Renamed BunnySession → ConversationSession
+   - Stores session metadata, context (last 5 turns), vocabulary
+   - /init endpoint for session initialization
+   - /chat endpoint for conversation
+   - alarm() for cleanup
+
+4. **Queue Consumer**: Updated vocabulary analysis per specs
+   - Extracts words, compares against previous vocabulary
+   - Creates highlights for new words
+   - Updates analysis_jobs table with status
+
+5. **Configuration**: Updated wrangler.jsonc
+   - BUNNY_SESSION → CONVERSATION_SESSION binding
+   - Added migration v2 with renamed_classes
+
+6. **Migration**: Created 0002_schema_refactor.sql
+   - Drops old tables (profiles, events, vocab_items, etc.)
+   - Creates new schema matching specs
+
+### Testing
+- TypeScript type check: PASSED
+- All code compiles without errors
+
+### Next Steps
+- Frontend needs to be updated to match new API endpoints
+- D1 migration needs to be applied: `wrangler d1 migrations apply my-usagi-db`
+- ASR and TTS services are still mocked
+
+### Status
+✓ Backend refactoring complete
