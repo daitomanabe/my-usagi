@@ -173,3 +173,60 @@ Decision:
 
 Next:
 - Awaiting frontend.done event from Frontend Developer
+
+=== Iteration: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===
+Hat: Ralph (Coordinator)
+Event: specs.ready.frontend (received)
+
+Analysis:
+- Backend refactoring complete (backend.done received earlier)
+- Frontend files exist but use OLD API endpoints:
+  * public/app.js uses /api/chat (old endpoint)
+  * public/app.js uses /api/audio/upload (old endpoint)
+  * Parent dashboard exists but needs updating for new API
+- NEW API endpoints (specs/api.md):
+  * POST /api/session/start - Start session, get greeting
+  * POST /api/conversation/audio - Send audio to rabbit
+  * POST /api/conversation/text - Send text to rabbit
+  * GET /api/parent/logs - Conversation logs
+  * GET /api/parent/vocabulary - Vocabulary analytics
+  * GET /api/parent/highlights - Notable moments
+
+Frontend Developer Tasks:
+1. Update child UI (public/index.html, app.js, style.css):
+   - Implement session management (start session on page load)
+   - Update audio upload to use /api/conversation/audio with multipart/form-data
+   - Play TTS audio responses from R2 URLs
+   - Improve bunny character animations
+2. Update parent dashboard (public/parent/):
+   - Implement logs viewer using /api/parent/logs
+   - Create vocabulary growth chart using /api/parent/vocabulary
+   - Display highlights using /api/parent/highlights
+3. Update Service Worker and manifest for PWA
+
+Decision:
+- Publishing specs.ready.frontend event to Frontend Developer
+- Frontend Developer will refactor PWA to match new API endpoints
+
+Next:
+- Awaiting frontend.done event from Frontend Developer
+
+=== Iteration: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===
+Hat: Ralph (Coordinator)
+Event: specs.ready.frontend (handling)
+
+Analysis:
+- Backend refactoring complete (backend.done received)
+- Frontend files exist but use OLD API endpoints
+- Need Frontend Developer to implement PWA UI matching new API
+
+Action:
+- Publishing specs.ready.frontend event to Frontend Developer
+- Frontend Developer will implement:
+  1. Child UI: session start, audio I/O via /api/conversation/audio, bunny character
+  2. Parent dashboard: logs (/api/parent/logs), vocabulary (/api/parent/vocabulary), highlights (/api/parent/highlights)
+  3. PWA: service worker, manifest, offline support
+
+Next:
+- Awaiting frontend.done event from Frontend Developer
+
