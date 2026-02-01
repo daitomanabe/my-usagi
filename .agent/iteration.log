@@ -3,3 +3,99 @@
 # Format: [{ISO8601}] iteration #{n} | {Hat名} | {状態} | {概要}
 [2026-02-01T12:11:13Z] iteration #1 | Architect | completed | System design complete: API specs, data model, conversation flow
 [2026-02-01T12:16:04Z] iteration #2 | Ralph | delegating | Received specs.ready events, delegating to Backend and Frontend Developers
+
+=== Iteration: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===
+Hat: Ralph (Coordinator)
+Event: specs.ready.backend
+
+Status:
+- Reviewed specs: api.md, data-model.md, conversation-flow.md
+- Found existing src/index.ts with different schema (profiles/events vs sessions/conversation_turns)
+- Need Backend Developer to refactor to match specs
+
+Next Action:
+- Publishing specs.ready.backend to Backend Developer
+- Backend Developer will refactor implementation to match specs
+
+
+=== Iteration: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===
+Hat: Ralph (Coordinator)
+Event: specs.ready.backend (received)
+
+Analysis:
+- Current src/index.ts uses old schema (profiles/events)
+- Specs define new schema (sessions/conversation_turns/vocabulary/highlights)
+- Backend Developer needs to refactor implementation
+
+Action:
+- Published specs.ready.backend event to Backend Developer
+- Backend Developer will implement according to specs
+
+Next:
+- Waiting for backend.done event
+
+=== Iteration: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===
+Hat: Ralph (Coordinator)
+Event: specs.ready.backend (handling)
+
+Analysis:
+- Current src/index.ts uses OLD schema:
+  * profiles table
+  * events table (source=child/bunny)
+  * sessions table with profile_id FK
+  * vocab_items table
+  * daily_summaries table
+
+- NEW specs require DIFFERENT schema:
+  * sessions table (child_id instead of profile_id)
+  * conversation_turns (replaces events, different structure)
+  * vocabulary (different from vocab_items)
+  * highlights table (new)
+  * analysis_jobs table (new)
+
+- API endpoints also changed:
+  * OLD: /api/chat (single endpoint)
+  * NEW: /api/session/start, /api/conversation/audio, /api/conversation/text, /api/parent/* endpoints
+
+Action:
+- Publishing specs.ready.backend event to Backend Developer
+- Backend Developer will refactor implementation to match specs/api.md and specs/data-model.md
+
+Next:
+- Waiting for backend.done event from Backend Developer
+
+=== Iteration: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===
+Hat: Ralph (Coordinator)
+Event: specs.ready.backend (received)
+
+Analysis:
+- Current src/index.ts uses OLD schema (profiles/events/sessions/vocab_items)
+- NEW specs require DIFFERENT schema (sessions/conversation_turns/vocabulary/highlights/analysis_jobs)
+- API endpoints changed from single /api/chat to multiple endpoints per specs/api.md
+- Schema mismatch requires Backend Developer refactoring
+
+Decision:
+- Delegating to Backend Developer via specs.ready.backend event
+- Backend Developer will refactor src/index.ts to match specs/api.md and specs/data-model.md
+
+Next:
+- Awaiting backend.done event from Backend Developer
+
+
+=== Iteration: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ===
+Hat: Ralph (Coordinator)
+Event: specs.ready.backend (received)
+
+Status:
+- Reviewed specs/api.md and specs/data-model.md
+- Current src/index.ts uses old schema (profiles/events/vocab_items/daily_summaries)
+- New specs require different schema (sessions/conversation_turns/vocabulary/highlights/analysis_jobs)
+- API endpoints changed from single /api/chat to multiple endpoints
+
+Decision:
+- Delegating to Backend Developer via specs.ready.backend event
+- Backend Developer will refactor src/index.ts to match new API and data model specs
+
+Next:
+- Awaiting backend.done event
+

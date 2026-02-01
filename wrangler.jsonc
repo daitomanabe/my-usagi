@@ -18,8 +18,8 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "BUNNY_SESSION",
-        "class_name": "BunnySession"
+        "name": "CONVERSATION_SESSION",
+        "class_name": "ConversationSession"
       }
     ]
   },
@@ -28,6 +28,11 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["BunnySession"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ConversationSession"],
+      "renamed_classes": [{"from": "BunnySession", "to": "ConversationSession"}]
     }
   ],
 

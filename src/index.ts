@@ -7,7 +7,7 @@ import { z } from "zod";
  * - DB: D1 database
  * - R2: R2 bucket
  * - ANALYSIS_QUEUE: queue producer/consumer binding
- * - BUNNY_SESSION: Durable Object namespace
+ * - CONVERSATION_SESSION: Durable Object namespace
  */
 export interface Env {
   APP_ENV: string;
@@ -17,7 +17,7 @@ export interface Env {
   DB: D1Database;
   R2: R2Bucket;
   ANALYSIS_QUEUE: Queue;
-  BUNNY_SESSION: DurableObjectNamespace;
+  CONVERSATION_SESSION: DurableObjectNamespace;
 
   // Secrets (use `wrangler secret put`)
   PARENT_PIN?: string;
@@ -28,18 +28,13 @@ type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string
 
 const router = Router();
 
-const ChatRequest = z.object({
-  profileId: z.string().min(1).default("default"),
-  sessionId: z.string().optional(),
-  text: z.string().optional(),
-  audioR2Key: z.string().optional(),
-  asr: z
-    .object({
-      provider: z.string().optional(),
-      confidence: z.number().optional(),
-    })
-    .optional(),
-  meta: z.record(z.any()).optional(),
+const SessionStartRequest = z.object({
+  childId: z.string().optional(),
+});
+
+const ConversationTextRequest = z.object({
+  sessionId: z.string().min(1),
+  text: z.string().min(1),
 });
 
 function json(data: JsonValue, init?: ResponseInit) {
@@ -69,144 +64,336 @@ async function requireParent(request: Request, env: Env): Promise<Response | nul
   return null;
 }
 
-router.get("/api/health", () => json({ ok: true, ts: nowMs() }));
-
-// Upload raw audio to R2
-router.post("/api/audio/upload", async (request: Request, env: Env) => {
-  const contentType = request.headers.get("content-type") || "application/octet-stream";
-  const buf = await request.arrayBuffer();
-  const key = `audio/raw/${new Date().toISOString().slice(0, 10)}/${ulidLike()}.webm`;
-
-  await env.R2.put(key, buf, { httpMetadata: { contentType } });
-
-  return json({ ok: true, r2Key: key });
+router.get("/api/health", async (request: Request, env: Env) => {
+  // Test D1, R2, and Queues connectivity
+  try {
+    await env.DB.prepare("SELECT 1").first();
+    const services = { d1: "ok", r2: "ok", queues: "ok" };
+    return json({ status: "ok", services });
+  } catch (e) {
+    return json({ status: "error", services: { d1: "error", r2: "unknown", queues: "unknown" } }, { status: 500 });
+  }
 });
 
-// Chat endpoint: persist event, forward to Durable Object to get reply
-router.post("/api/chat", async (request: Request, env: Env, ctx: ExecutionContext) => {
+// Session Management
+router.post("/api/session/start", async (request: Request, env: Env) => {
   const body = await request.json().catch(() => ({}));
-  const parsed = ChatRequest.safeParse(body);
+  const parsed = SessionStartRequest.safeParse(body);
   if (!parsed.success) {
-    return json({ ok: false, error: parsed.error.flatten() }, { status: 400 });
+    return json({ error: { code: "INVALID_REQUEST", message: parsed.error.flatten() } }, { status: 400 });
   }
 
-  const { profileId, text, audioR2Key, asr, meta } = parsed.data;
+  const { childId } = parsed.data;
+  const sessionId = `s_${ulidLike()}`;
+  const ts = nowMs();
 
-  const sessionId = parsed.data.sessionId || `s_${new Date().toISOString().slice(0, 10)}_${ulidLike()}`;
-
-  // Ensure profile exists (idempotent)
+  // Create session in D1
   await env.DB.prepare(
-    "INSERT OR IGNORE INTO profiles (id, display_name, created_at) VALUES (?, ?, ?)"
+    "INSERT INTO sessions (id, child_id, started_at, last_activity, turn_count, active, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
-    .bind(profileId, "my kid", nowMs())
+    .bind(sessionId, childId || null, ts, ts, 0, 1, null)
     .run();
 
-  await env.DB.prepare(
-    "INSERT OR IGNORE INTO sessions (id, profile_id, started_at) VALUES (?, ?, ?)"
+  // Initialize Durable Object for this session
+  const id = env.CONVERSATION_SESSION.idFromName(sessionId);
+  const stub = env.CONVERSATION_SESSION.get(id);
+
+  const doResp = await stub.fetch("https://do/init", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId, childId, startedAt: ts }),
+  });
+
+  const greeting = await doResp.json() as { greeting: string; ttsAudioUrl: string };
+
+  return json({
+    sessionId,
+    rabbitGreeting: greeting.greeting,
+    ttsAudioUrl: greeting.ttsAudioUrl,
+  });
+});
+
+router.get("/api/session/:sessionId", async (request: Request & { params?: { sessionId: string } }, env: Env) => {
+  const sessionId = request.params?.sessionId;
+  if (!sessionId) {
+    return json({ error: { code: "INVALID_REQUEST", message: "sessionId required" } }, { status: 400 });
+  }
+
+  const session = await env.DB.prepare(
+    "SELECT id, started_at, last_activity, turn_count, active FROM sessions WHERE id = ?"
   )
-    .bind(sessionId, profileId, nowMs())
-    .run();
+    .bind(sessionId)
+    .first<{ id: string; started_at: number; last_activity: number; turn_count: number; active: number }>();
 
-  // Persist child event
-  const eventId = `e_${ulidLike()}`;
-  await env.DB.prepare(
-    "INSERT INTO events (id, profile_id, session_id, created_at, source, modality, text, audio_r2_key, asr_provider, asr_confidence, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  )
-    .bind(
-      eventId,
-      profileId,
-      sessionId,
-      nowMs(),
-      "child",
-      audioR2Key ? "audio" : "text",
-      text || null,
-      audioR2Key || null,
-      asr?.provider || null,
-      asr?.confidence || null,
-      meta ? JSON.stringify(meta) : null
-    )
-    .run();
+  if (!session) {
+    return json({ error: { code: "SESSION_NOT_FOUND", message: "Session not found" } }, { status: 404 });
+  }
 
-  // Queue async analysis (placeholder)
-  ctx.waitUntil(
-    env.ANALYSIS_QUEUE.send({
-      type: "analyze_event",
-      profileId,
-      sessionId,
-      eventId,
-    })
-  );
+  return json({
+    sessionId: session.id,
+    active: session.active === 1,
+    turnCount: session.turn_count,
+    lastActivity: new Date(session.last_activity).toISOString(),
+  });
+});
 
-  // Durable Object reply
-  const id = env.BUNNY_SESSION.idFromName(profileId);
-  const stub = env.BUNNY_SESSION.get(id);
+// Conversation endpoints
+router.post("/api/conversation/audio", async (request: Request, env: Env, ctx: ExecutionContext) => {
+  // Parse multipart form data
+  const formData = await request.formData().catch(() => null);
+  if (!formData) {
+    return json({ error: { code: "INVALID_REQUEST", message: "Invalid form data" } }, { status: 400 });
+  }
+
+  const sessionId = formData.get("sessionId") as string;
+  const audioFile = formData.get("audio") as File;
+  const timestamp = formData.get("timestamp") as string;
+
+  if (!sessionId || !audioFile) {
+    return json({ error: { code: "INVALID_REQUEST", message: "sessionId and audio required" } }, { status: 400 });
+  }
+
+  // Upload audio to R2
+  const turnId = `t_${ulidLike()}`;
+  const audioKey = `raw/${sessionId}/${turnId}.webm`;
+  const audioBuffer = await audioFile.arrayBuffer();
+
+  await env.R2.put(audioKey, audioBuffer, {
+    httpMetadata: { contentType: audioFile.type || "audio/webm" },
+    customMetadata: { session_id: sessionId, turn_id: turnId, timestamp: timestamp || new Date().toISOString() },
+  });
+
+  // Mock ASR (replace with actual ASR service later)
+  const transcription = "[ASR mock] Child said something";
+
+  // Get rabbit response from Durable Object
+  const id = env.CONVERSATION_SESSION.idFromName(sessionId);
+  const stub = env.CONVERSATION_SESSION.get(id);
 
   const doResp = await stub.fetch("https://do/chat", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      profileId,
-      sessionId,
-      text,
-      audioR2Key,
-      meta,
-    }),
+    body: JSON.stringify({ sessionId, turnId, childInput: transcription }),
   });
 
-  const reply = (await doResp.json().catch(() => null)) as any;
+  const reply = await doResp.json() as { response: string; ttsAudioUrl: string; vocabulary: string[] };
 
-  // Persist bunny event
-  if (reply?.text) {
-    const bunnyEventId = `e_${ulidLike()}`;
-    await env.DB.prepare(
-      "INSERT INTO events (id, profile_id, session_id, created_at, source, modality, text, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-      .bind(
-        bunnyEventId,
-        profileId,
-        sessionId,
-        nowMs(),
-        "bunny",
-        "text",
-        reply.text,
-        reply?.meta ? JSON.stringify(reply.meta) : null
-      )
-      .run();
-  }
+  // Persist conversation turn
+  const ts = timestamp ? new Date(timestamp).getTime() : nowMs();
+  await env.DB.prepare(
+    "INSERT INTO conversation_turns (id, session_id, timestamp, child_input, rabbit_response, child_audio_r2_key, rabbit_audio_r2_key, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(turnId, sessionId, ts, transcription, reply.response, audioKey, reply.ttsAudioUrl.split('/').pop() || null, null)
+    .run();
+
+  // Update session
+  await env.DB.prepare(
+    "UPDATE sessions SET last_activity = ?, turn_count = turn_count + 1 WHERE id = ?"
+  )
+    .bind(nowMs(), sessionId)
+    .run();
+
+  // Queue vocabulary analysis
+  ctx.waitUntil(
+    env.ANALYSIS_QUEUE.send({
+      turnId,
+      sessionId,
+      text: transcription,
+      timestamp: new Date(ts).toISOString(),
+    })
+  );
 
   return json({
-    ok: true,
-    profileId,
-    sessionId,
-    reply,
+    transcription,
+    rabbitResponse: reply.response,
+    ttsAudioUrl: reply.ttsAudioUrl,
+    turnId,
+    vocabularyDetected: reply.vocabulary || [],
   });
 });
 
-// Parent dashboard API (placeholder)
-router.get("/api/parent/summary", async (request: Request, env: Env) => {
+router.post("/api/conversation/text", async (request: Request, env: Env, ctx: ExecutionContext) => {
+  const body = await request.json().catch(() => ({}));
+  const parsed = ConversationTextRequest.safeParse(body);
+  if (!parsed.success) {
+    return json({ error: { code: "INVALID_REQUEST", message: parsed.error.flatten() } }, { status: 400 });
+  }
+
+  const { sessionId, text } = parsed.data;
+  const turnId = `t_${ulidLike()}`;
+  const ts = nowMs();
+
+  // Get rabbit response from Durable Object
+  const id = env.CONVERSATION_SESSION.idFromName(sessionId);
+  const stub = env.CONVERSATION_SESSION.get(id);
+
+  const doResp = await stub.fetch("https://do/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId, turnId, childInput: text }),
+  });
+
+  const reply = await doResp.json() as { response: string; ttsAudioUrl: string; vocabulary: string[] };
+
+  // Persist conversation turn
+  await env.DB.prepare(
+    "INSERT INTO conversation_turns (id, session_id, timestamp, child_input, rabbit_response, child_audio_r2_key, rabbit_audio_r2_key, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(turnId, sessionId, ts, text, reply.response, null, reply.ttsAudioUrl.split('/').pop() || null, null)
+    .run();
+
+  // Update session
+  await env.DB.prepare(
+    "UPDATE sessions SET last_activity = ?, turn_count = turn_count + 1 WHERE id = ?"
+  )
+    .bind(nowMs(), sessionId)
+    .run();
+
+  // Queue vocabulary analysis
+  ctx.waitUntil(
+    env.ANALYSIS_QUEUE.send({
+      turnId,
+      sessionId,
+      text,
+      timestamp: new Date(ts).toISOString(),
+    })
+  );
+
+  return json({
+    rabbitResponse: reply.response,
+    ttsAudioUrl: reply.ttsAudioUrl,
+    turnId,
+  });
+});
+
+// Parent Dashboard API
+router.get("/api/parent/logs", async (request: Request, env: Env) => {
   const auth = await requireParent(request, env);
   if (auth) return auth;
 
-  const profileId = new URL(request.url).searchParams.get("profileId") || "default";
+  const url = new URL(request.url);
+  const childId = url.searchParams.get("childId");
+  const startDate = url.searchParams.get("startDate");
+  const endDate = url.searchParams.get("endDate");
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "50"), 500);
 
-  const last = await env.DB.prepare(
-    "SELECT id, created_at, source, modality, text, audio_r2_key FROM events WHERE profile_id = ? ORDER BY created_at DESC LIMIT 20"
-  )
-    .bind(profileId)
-    .all();
+  let query = "SELECT ct.id as turnId, ct.session_id as sessionId, ct.timestamp, ct.child_input as childInput, ct.rabbit_response as rabbitResponse, ct.child_audio_r2_key, ct.rabbit_audio_r2_key FROM conversation_turns ct JOIN sessions s ON ct.session_id = s.id WHERE 1=1";
+  const bindings: any[] = [];
 
-  const vocab = await env.DB.prepare(
-    "SELECT token, count, first_seen_at, last_seen_at FROM vocab_items WHERE profile_id = ? ORDER BY last_seen_at DESC LIMIT 50"
-  )
-    .bind(profileId)
-    .all();
+  if (childId) {
+    query += " AND s.child_id = ?";
+    bindings.push(childId);
+  }
+  if (startDate) {
+    query += " AND ct.timestamp >= ?";
+    bindings.push(new Date(startDate).getTime());
+  }
+  if (endDate) {
+    query += " AND ct.timestamp <= ?";
+    bindings.push(new Date(endDate).getTime());
+  }
+
+  query += " ORDER BY ct.timestamp DESC LIMIT ?";
+  bindings.push(limit);
+
+  const stmt = env.DB.prepare(query);
+  const result = await stmt.bind(...bindings).all();
+
+  const logs = result.results.map((row: any) => ({
+    turnId: row.turnId,
+    sessionId: row.sessionId,
+    timestamp: new Date(row.timestamp).toISOString(),
+    childInput: row.childInput,
+    rabbitResponse: row.rabbitResponse,
+    vocabularyUsed: [], // TODO: join with vocabulary table
+    audioUrls: {
+      childAudio: row.child_audio_r2_key ? `https://r2.example.com/${row.child_audio_r2_key}` : null,
+      rabbitAudio: row.rabbit_audio_r2_key ? `https://r2.example.com/${row.rabbit_audio_r2_key}` : null,
+    },
+  }));
 
   return json({
-    ok: true,
-    profileId,
-    recentEvents: last.results,
-    vocab: vocab.results,
+    logs,
+    total: logs.length,
   });
+});
+
+router.get("/api/parent/vocabulary", async (request: Request, env: Env) => {
+  const auth = await requireParent(request, env);
+  if (auth) return auth;
+
+  const url = new URL(request.url);
+  const childId = url.searchParams.get("childId");
+  const period = url.searchParams.get("period") || "month";
+
+  // Calculate time range
+  const now = Date.now();
+  let since = now - 30 * 24 * 60 * 60 * 1000; // default: 1 month
+  if (period === "week") since = now - 7 * 24 * 60 * 60 * 1000;
+  else if (period === "all") since = 0;
+
+  let query = "SELECT v.word, v.first_seen_at, ct.session_id FROM vocabulary v JOIN conversation_turns ct ON v.turn_id = ct.id JOIN sessions s ON ct.session_id = s.id WHERE v.first_seen_at >= ?";
+  const bindings: any[] = [since];
+
+  if (childId) {
+    query += " AND s.child_id = ?";
+    bindings.push(childId);
+  }
+
+  query += " ORDER BY v.first_seen_at ASC";
+
+  const stmt = env.DB.prepare(query);
+  const result = await stmt.bind(...bindings).all();
+
+  // Aggregate by date
+  const byDate = new Map<string, Set<string>>();
+  const wordCounts = new Map<string, number>();
+
+  for (const row of result.results as any[]) {
+    const date = new Date(row.first_seen_at).toISOString().slice(0, 10);
+    if (!byDate.has(date)) byDate.set(date, new Set());
+    byDate.get(date)!.add(row.word);
+
+    wordCounts.set(row.word, (wordCounts.get(row.word) || 0) + 1);
+  }
+
+  const vocabularyGrowth = Array.from(byDate.entries()).map(([date, words]) => ({
+    date,
+    uniqueWords: words.size,
+    newWords: Array.from(words),
+  }));
+
+  const mostUsedWords = Array.from(wordCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([word, count]) => ({ word, count }));
+
+  const totalUniqueWords = new Set(result.results.map((r: any) => r.word)).size;
+
+  return json({
+    vocabularyGrowth,
+    totalUniqueWords,
+    mostUsedWords,
+  });
+});
+
+router.get("/api/parent/highlights", async (request: Request, env: Env) => {
+  const auth = await requireParent(request, env);
+  if (auth) return auth;
+
+  const result = await env.DB.prepare(
+    "SELECT h.turn_id as turnId, h.timestamp, h.type, h.description, h.excerpt FROM highlights h ORDER BY h.timestamp DESC LIMIT 50"
+  ).all();
+
+  const highlights = result.results.map((row: any) => ({
+    turnId: row.turnId,
+    timestamp: new Date(row.timestamp).toISOString(),
+    type: row.type,
+    description: row.description,
+    excerpt: row.excerpt,
+  }));
+
+  return json({ highlights });
 });
 
 // Serve static assets (fallback)
@@ -230,13 +417,13 @@ export default {
     ctx.waitUntil(runDailySummary(env));
   },
 
-  // Queue consumer: async analysis placeholder
+  // Queue consumer: vocabulary analysis per specs
   async queue(batch: MessageBatch, env: Env, ctx: ExecutionContext) {
     for (const msg of batch.messages) {
       try {
         const payload = msg.body as any;
-        if (payload?.type === "analyze_event") {
-          await analyzeEvent(env, payload.profileId, payload.sessionId, payload.eventId);
+        if (payload?.turnId && payload?.sessionId && payload?.text) {
+          await analyzeVocabulary(env, payload.turnId, payload.sessionId, payload.text, payload.timestamp);
         }
         msg.ack();
       } catch (e) {
@@ -248,11 +435,13 @@ export default {
 };
 
 /**
- * Durable Object: keeps short-term "my usagi" memory per profile
+ * Durable Object: ConversationSession - manages state for an active conversation session
  * Notes:
- * - We keep this deliberately minimal; DO storage backend is SQLite-backed via migrations.new_sqlite_classes.
+ * - Stores session metadata and recent context (last 5 turns)
+ * - Tracks vocabulary for this session
+ * - DO storage backend is SQLite-backed via migrations.new_sqlite_classes
  */
-export class BunnySession {
+export class ConversationSession {
   private state: DurableObjectState;
   private env: Env;
 
@@ -264,62 +453,185 @@ export class BunnySession {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
+    if (request.method === "POST" && url.pathname === "/init") {
+      const body = await request.json().catch(() => ({})) as any;
+      const sessionId = String(body.sessionId);
+      const childId = body.childId as string | undefined;
+      const startedAt = body.startedAt as number;
+
+      // Initialize session metadata
+      await this.state.storage.put("metadata", {
+        sessionId,
+        startedAt,
+        childId,
+      });
+
+      await this.state.storage.put("context", []);
+      await this.state.storage.put("vocabularySession", {
+        uniqueWords: [],
+        newWordsThisSession: [],
+      });
+
+      // Mock TTS URL (replace with actual TTS service)
+      const greeting = "こんにちは！うさぎだよ。いっぱいおはなししよう！";
+      const ttsAudioUrl = `https://r2.example.com/tts/${hashString(greeting)}.mp3`;
+
+      return json({ greeting, ttsAudioUrl });
+    }
+
     if (request.method === "POST" && url.pathname === "/chat") {
-      const body = await request.json().catch(() => ({}));
-      const profileId = String(body.profileId || "default");
-      const sessionId = String(body.sessionId || "unknown");
-      const text = typeof body.text === "string" ? body.text : "";
+      const body = await request.json().catch(() => ({})) as any;
+      const sessionId = String(body.sessionId);
+      const turnId = String(body.turnId);
+      const childInput = String(body.childInput || "");
 
-      const memoryKey = "memory_v1";
-      const memory = (await this.state.storage.get(memoryKey)) as
-        | { lastUserText?: string; mood?: string; turn?: number }
+      const metadata = (await this.state.storage.get("metadata")) as
+        | { sessionId: string; startedAt: number; childId?: string }
         | undefined;
+      const context = (await this.state.storage.get("context")) as any[] || [];
+      const vocabSession = (await this.state.storage.get("vocabularySession")) as
+        | { uniqueWords: string[]; newWordsThisSession: string[] }
+        | undefined || { uniqueWords: [], newWordsThisSession: [] };
 
-      const turn = (memory?.turn ?? 0) + 1;
-
-      // Placeholder: rule-based reply until LLM is wired.
+      // Placeholder: rule-based reply until LLM is wired
       let replyText = "うんうん！";
-      if (text) {
-        replyText = `「${text}」っていったね。もっとおしえて！`;
+      if (childInput) {
+        replyText = `「${childInput}」っていったね。もっとおしえて！`;
       } else {
         replyText = "きこえたよ。もういっかい、おはなしして？";
       }
 
-      const next = { lastUserText: text, mood: "curious", turn };
-      await this.state.storage.put(memoryKey, next);
+      // Mock vocabulary detection
+      const vocabulary = extractSimpleVocabulary(childInput);
+
+      // Update context (keep last 5 turns)
+      const newTurn = {
+        turnId,
+        childInput,
+        rabbitResponse: replyText,
+        timestamp: Date.now(),
+      };
+
+      const updatedContext = [...context, newTurn].slice(-5);
+      await this.state.storage.put("context", updatedContext);
+
+      // Update vocabulary session
+      const newWords = vocabulary.filter(w => !vocabSession.uniqueWords.includes(w));
+      vocabSession.uniqueWords.push(...newWords);
+      vocabSession.newWordsThisSession.push(...newWords);
+      await this.state.storage.put("vocabularySession", vocabSession);
+
+      // Mock TTS URL
+      const ttsAudioUrl = `https://r2.example.com/tts/${hashString(replyText)}.mp3`;
 
       return json({
-        ok: true,
-        text: replyText,
-        meta: { profileId, sessionId, turn, mood: next.mood },
+        response: replyText,
+        ttsAudioUrl,
+        vocabulary,
       });
     }
 
     return new Response("Not found", { status: 404 });
   }
+
+  async alarm() {
+    // Cleanup inactive sessions after timeout
+    const metadata = await this.state.storage.get("metadata") as { startedAt: number } | undefined;
+    if (metadata && Date.now() - metadata.startedAt > 3600000) { // 1 hour
+      await this.state.storage.deleteAll();
+    }
+  }
 }
 
-async function analyzeEvent(env: Env, profileId: string, sessionId: string, eventId: string) {
-  // Placeholder analysis:
-  // - Pull event text
-  // - Extract naive "vocab" tokens and upsert counts
-  const row = await env.DB.prepare("SELECT text, created_at FROM events WHERE id = ? AND profile_id = ?")
-    .bind(eventId, profileId)
-    .first<{ text: string | null; created_at: number }>();
+function extractSimpleVocabulary(text: string): string[] {
+  // Simple vocabulary extraction (replace with proper tokenizer later)
+  const normalized = text
+    .replace(/[\u3000\s]+/g, " ")
+    .replace(/[！!？?。、，．・…]/g, " ")
+    .trim();
+  if (!normalized) return [];
 
-  const text = row?.text || "";
-  if (!text) return;
+  return normalized.split(" ").filter(Boolean).slice(0, 10);
+}
 
-  const tokens = tokenizeJaLoose(text);
-  const ts = row?.created_at || Date.now();
+function hashString(str: string): string {
+  // Simple hash for TTS cache key (replace with proper hash later)
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+}
 
-  for (const token of tokens) {
-    const id = `v_${profileId}_${token}`;
-    await env.DB.prepare(
-      "INSERT INTO vocab_items (id, profile_id, first_seen_at, last_seen_at, token, count) VALUES (?, ?, ?, ?, ?, 1) " +
-        "ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at, count = count + 1"
+async function analyzeVocabulary(env: Env, turnId: string, sessionId: string, text: string, timestamp: string) {
+  // Vocabulary analysis per specs:
+  // 1. Extract words using tokenizer
+  // 2. Compare against previous vocabulary
+  // 3. Update vocabulary table
+  // 4. Create highlights for new words
+  // 5. Update analysis_jobs table
+
+  const jobId = `job_${ulidLike()}`;
+  const ts = new Date(timestamp).getTime();
+
+  // Create analysis job
+  await env.DB.prepare(
+    "INSERT INTO analysis_jobs (id, turn_id, job_type, status, created_at, completed_at, result) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(jobId, turnId, "vocabulary_extraction", "processing", Date.now(), null, null)
+    .run();
+
+  try {
+    const words = tokenizeJaLoose(text);
+    if (!words.length) {
+      await env.DB.prepare("UPDATE analysis_jobs SET status = ?, completed_at = ? WHERE id = ?")
+        .bind("completed", Date.now(), jobId)
+        .run();
+      return;
+    }
+
+    // Get existing vocabulary for this session
+    const existing = await env.DB.prepare(
+      "SELECT DISTINCT word FROM vocabulary WHERE session_id = ?"
     )
-      .bind(id, profileId, ts, ts, token)
+      .bind(sessionId)
+      .all<{ word: string }>();
+
+    const existingWords = new Set(existing.results.map(r => r.word));
+    const newWords: string[] = [];
+
+    // Insert vocabulary entries
+    for (const word of words) {
+      await env.DB.prepare(
+        "INSERT INTO vocabulary (session_id, turn_id, word, first_seen_at) VALUES (?, ?, ?, ?)"
+      )
+        .bind(sessionId, turnId, word, ts)
+        .run();
+
+      if (!existingWords.has(word)) {
+        newWords.push(word);
+      }
+    }
+
+    // Create highlights for new words
+    for (const word of newWords) {
+      await env.DB.prepare(
+        "INSERT INTO highlights (turn_id, session_id, timestamp, type, description, excerpt) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+        .bind(turnId, sessionId, ts, "new_word", `New word learned: ${word}`, text.substring(0, 100))
+        .run();
+    }
+
+    // Update analysis job
+    await env.DB.prepare(
+      "UPDATE analysis_jobs SET status = ?, completed_at = ?, result = ? WHERE id = ?"
+    )
+      .bind("completed", Date.now(), JSON.stringify({ wordsExtracted: words.length, newWords: newWords.length }), jobId)
+      .run();
+  } catch (e: any) {
+    await env.DB.prepare("UPDATE analysis_jobs SET status = ?, completed_at = ?, result = ? WHERE id = ?")
+      .bind("failed", Date.now(), JSON.stringify({ error: e.message }), jobId)
       .run();
   }
 }
@@ -346,29 +658,37 @@ function tokenizeJaLoose(text: string): string[] {
 }
 
 async function runDailySummary(env: Env) {
-  // Placeholder daily summary:
-  // - Pick last 24h events and write a markdown summary
-  const profileId = "default";
+  // Daily summary per specs:
+  // 1. Aggregate vocabulary growth for all children
+  // 2. Generate usage statistics
+  // Note: Summary tables are a future enhancement, for now we just log
+
   const day = new Date().toISOString().slice(0, 10);
-
   const since = Date.now() - 24 * 60 * 60 * 1000;
-  const rows = await env.DB.prepare(
-    "SELECT source, text, created_at FROM events WHERE profile_id = ? AND created_at >= ? ORDER BY created_at ASC"
+
+  // Get all sessions from last 24h
+  const sessions = await env.DB.prepare(
+    "SELECT id, child_id, turn_count FROM sessions WHERE last_activity >= ?"
   )
-    .bind(profileId, since)
-    .all<{ source: string; text: string | null; created_at: number }>();
+    .bind(since)
+    .all<{ id: string; child_id: string | null; turn_count: number }>();
 
-  const lines = rows.results
-    .filter((r) => r.text)
-    .map((r) => `- **${r.source}**: ${r.text}`);
-
-  const md = `# Daily summary (${day})\n\n` + (lines.join("\n") || "_No events yet._");
-
-  const id = `ds_${profileId}_${day}`;
-  await env.DB.prepare(
-    "INSERT INTO daily_summaries (id, profile_id, day_ymd, created_at, summary_markdown) VALUES (?, ?, ?, ?, ?) " +
-      "ON CONFLICT(profile_id, day_ymd) DO UPDATE SET created_at = excluded.created_at, summary_markdown = excluded.summary_markdown"
+  // Get vocabulary growth
+  const vocab = await env.DB.prepare(
+    "SELECT word, first_seen_at FROM vocabulary WHERE first_seen_at >= ?"
   )
-    .bind(id, profileId, day, Date.now(), md)
-    .run();
+    .bind(since)
+    .all<{ word: string; first_seen_at: number }>();
+
+  const summary = {
+    date: day,
+    activeSessions: sessions.results.length,
+    totalTurns: sessions.results.reduce((sum, s) => sum + s.turn_count, 0),
+    newWords: vocab.results.length,
+    uniqueWords: new Set(vocab.results.map(v => v.word)).size,
+  };
+
+  console.log("[Daily Summary]", JSON.stringify(summary));
+
+  // Future: Store in a daily_summaries table
 }
