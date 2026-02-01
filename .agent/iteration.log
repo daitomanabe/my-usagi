@@ -3,3 +3,5 @@
 # Format: [{ISO8601}] iteration #{n} | {Hat名} | {状態} | {概要}
 [2026-02-01T12:04:58Z] iteration #1 | Ralph | started | Received task.start, delegating to Git Setup
 [2026-02-01T12:08:05Z] Git Setup: Authentication verified, initial commit pushed
+[2026-02-01T12:08:47Z] iteration #2 | Ralph | delegating | Received git.ready, delegating to Architect
+[2026-02-01T12:09:25Z] iteration #3 | Ralph | delegating | git.ready received, no Architect trigger defined - publishing specs.ready events directly

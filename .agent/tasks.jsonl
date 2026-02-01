@@ -1,4 +1,4 @@
-{"id":"task-1769947583-c445","title":"Git/GitHub初期化と認証確認","status":"open","priority":1,"blocked_by":[],"created":"2026-02-01T12:06:23.246858+00:00"}
+{"id":"task-1769947583-c445","title":"Git/GitHub初期化と認証確認","status":"closed","priority":1,"blocked_by":[],"created":"2026-02-01T12:06:23.246858+00:00","closed":"2026-02-01T12:08:47.120453+00:00"}
 {"id":"task-1769947587-8639","title":"システム設計・API仕様策定（specs/配下）","status":"open","priority":1,"blocked_by":["task-1769947583-c445"],"created":"2026-02-01T12:06:27.099901+00:00"}
 {"id":"task-1769947590-37e5","title":"Cloudflare Workers バックエンド実装","status":"open","priority":2,"blocked_by":["task-1769947587-8639"],"created":"2026-02-01T12:06:30.669673+00:00"}
 {"id":"task-1769947594-e08a","title":"PWA フロントエンド実装（子ども向けUI + 親ダッシュボード）","status":"open","priority":2,"blocked_by":["task-1769947587-8639"],"created":"2026-02-01T12:06:34.647310+00:00"}
