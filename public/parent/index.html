@@ -10,27 +10,41 @@
     <main class="wrap">
       <header>
         <a href="/">← こども</a>
-        <h1>おとなダッシュボード（暫定）</h1>
+        <h1>おとなダッシュボード</h1>
       </header>
 
       <section class="card">
-        <h2>PIN</h2>
-        <p>このページは暫定で <code>?pin=</code> を使います（最初に直すべき）。</p>
-        <input id="pin" type="password" placeholder="PIN" />
-        <button id="btnLoad">読み込む</button>
-        <div id="status"></div>
+        <h2>設定</h2>
+        <div class="controls">
+          <label>
+            期間:
+            <select id="period">
+              <option value="week">1週間</option>
+              <option value="month" selected>1ヶ月</option>
+              <option value="all">すべて</option>
+            </select>
+          </label>
+          <button id="btnLoad" class="btn">読み込む</button>
+        </div>
+        <div id="status" class="status"></div>
       </section>
 
       <section class="grid">
         <div class="card">
-          <h2>最近の会話</h2>
-          <pre id="events"></pre>
+          <h2>ハイライト</h2>
+          <div id="highlights" class="highlights-list"></div>
         </div>
 
         <div class="card">
-          <h2>語彙（超雑）</h2>
-          <pre id="vocab"></pre>
+          <h2>語彙の成長</h2>
+          <div id="vocabStats" class="vocab-stats"></div>
+          <div id="vocabGrowth" class="vocab-growth"></div>
         </div>
+      </section>
+
+      <section class="card">
+        <h2>最近の会話</h2>
+        <div id="logs" class="logs-list"></div>
       </section>
     </main>
 

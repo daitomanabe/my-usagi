@@ -5,9 +5,9 @@ const btnStop = $("btnStop");
 const transcriptEl = $("transcript");
 const statusEl = $("status");
 const bunnyTextEl = $("bunnyText");
+const bunnyFace = document.querySelector(".bunny-face");
 
-const profileId = "default";
-
+let sessionId = null;
 let recognition = null;
 let mediaRecorder = null;
 let audioChunks = [];
@@ -24,6 +24,10 @@ function setTranscript(t) {
 
 function setBunnyText(t) {
   bunnyTextEl.textContent = t;
+}
+
+function setBunnyState(state) {
+  bunnyFace.className = "bunny-face " + state;
 }
 
 function hasSpeechRecognition() {
@@ -60,6 +64,46 @@ function createRecognition() {
   return r;
 }
 
+async function startSession() {
+  try {
+    const resp = await fetch("/api/session/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message || "Session start failed");
+
+    sessionId = data.sessionId;
+    setBunnyText(data.rabbitGreeting || "おはなししよう？");
+    setStatus({ stage: "session.started", sessionId });
+
+    if (data.ttsAudioUrl) {
+      playAudio(data.ttsAudioUrl);
+    }
+
+    return sessionId;
+  } catch (e) {
+    setStatus({ stage: "session_start_failed", error: String(e) });
+    setBunnyText("ごめんね、つながらないみたい…");
+    return null;
+  }
+}
+
+async function playAudio(url) {
+  try {
+    const audio = new Audio(url);
+    setBunnyState("speaking");
+    audio.onended = () => setBunnyState("idle");
+    audio.onerror = () => setBunnyState("idle");
+    await audio.play();
+  } catch (e) {
+    setBunnyState("idle");
+    console.error("Audio playback failed:", e);
+  }
+}
+
 async function startRecording() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   audioChunks = [];
@@ -70,7 +114,6 @@ async function startRecording() {
   };
 
   mediaRecorder.onstop = () => {
-    // stop tracks
     stream.getTracks().forEach((t) => t.stop());
   };
 
@@ -84,36 +127,47 @@ function stopRecording() {
   }
 }
 
-async function uploadAudioIfAny() {
+async function sendAudio() {
   if (!audioChunks.length) return null;
-  const blob = new Blob(audioChunks, { type: "audio/webm" });
+  if (!sessionId) {
+    sessionId = await startSession();
+    if (!sessionId) return null;
+  }
 
-  const resp = await fetch("/api/audio/upload", {
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
+  const formData = new FormData();
+  formData.append("sessionId", sessionId);
+  formData.append("audio", blob, "recording.webm");
+  formData.append("timestamp", new Date().toISOString());
+
+  const resp = await fetch("/api/conversation/audio", {
     method: "POST",
-    headers: { "content-type": "audio/webm" },
-    body: await blob.arrayBuffer(),
+    body: formData,
   });
 
   const data = await resp.json();
-  if (!data.ok) throw new Error("audio upload failed");
-  return data.r2Key;
+  if (data.error) throw new Error(data.error.message || "Audio processing failed");
+  return data;
 }
 
-async function sendChat({ text, audioR2Key }) {
-  const resp = await fetch("/api/chat", {
+async function sendText(text) {
+  if (!sessionId) {
+    sessionId = await startSession();
+    if (!sessionId) return null;
+  }
+
+  const resp = await fetch("/api/conversation/text", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      profileId,
+      sessionId,
       text,
-      audioR2Key,
-      asr: hasSpeechRecognition() ? { provider: "web_speech" } : undefined,
     }),
   });
 
   const data = await resp.json();
-  if (!data.ok) throw new Error(data.error || "chat failed");
-  return data.reply?.text || "…";
+  if (data.error) throw new Error(data.error.message || "Chat failed");
+  return data;
 }
 
 async function onStart() {
@@ -121,6 +175,7 @@ async function onStart() {
   btnStop.disabled = false;
   setTranscript("");
   setBunnyText("きいてるよ…");
+  setBunnyState("listening");
 
   try {
     await startRecording();
@@ -137,11 +192,13 @@ async function onStart() {
     btnStart.disabled = false;
     btnStop.disabled = true;
     setBunnyText("マイクがつかえないみたい…");
+    setBunnyState("idle");
   }
 }
 
 async function onStop() {
   btnStop.disabled = true;
+  setBunnyState("thinking");
 
   try {
     if (recognition) {
@@ -149,28 +206,40 @@ async function onStop() {
     }
     stopRecording();
 
-    // Wait a tick for recorder to flush data
     await new Promise((r) => setTimeout(r, 300));
 
-    const audioR2Key = await uploadAudioIfAny();
-
-    const text = (lastTranscript || "").trim();
     setBunnyText("かんがえてる…");
 
-    const reply = await sendChat({ text, audioR2Key });
-    setBunnyText(reply);
+    const result = await sendAudio();
 
-    setStatus({
-      stage: "done",
-      text,
-      audioR2Key,
-    });
+    if (result) {
+      if (result.transcription) {
+        setTranscript(result.transcription);
+      }
+
+      setBunnyText(result.rabbitResponse || "…");
+
+      if (result.ttsAudioUrl) {
+        await playAudio(result.ttsAudioUrl);
+      }
+
+      setStatus({
+        stage: "done",
+        transcription: result.transcription,
+        turnId: result.turnId,
+        vocabularyDetected: result.vocabularyDetected,
+      });
+    } else {
+      setBunnyText("ごめんね、もういっかい？");
+    }
   } catch (e) {
     setStatus({ stage: "stop_failed", error: String(e) });
     setBunnyText("ごめんね、もういっかい？");
+    setBunnyState("idle");
   } finally {
     btnStart.disabled = false;
     btnStop.disabled = true;
+    setBunnyState("idle");
   }
 }
 
@@ -180,3 +249,7 @@ btnStop.addEventListener("click", onStop);
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
+
+window.addEventListener("load", async () => {
+  sessionId = await startSession();
+});
