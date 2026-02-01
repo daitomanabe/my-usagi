@@ -1,0 +1,44 @@
+name: AI Patch (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to work on"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  ai_patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run AI patch script (placeholder)
+        env:
+          # Put your provider keys in GitHub Secrets:
+          #   ANTHROPIC_API_KEY, OPENAI_API_KEY
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: node ./scripts/ai/ai_patch.mjs
+
+      - name: Create PR (placeholder)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "TODO: commit changes + create PR"
+          echo "For safety, this workflow intentionally does not auto-commit yet."

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>my-usagi / おとな</title>
+    <link rel="stylesheet" href="/parent/style.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <a href="/">← こども</a>
+        <h1>おとなダッシュボード（暫定）</h1>
+      </header>
+
+      <section class="card">
+        <h2>PIN</h2>
+        <p>このページは暫定で <code>?pin=</code> を使います（最初に直すべき）。</p>
+        <input id="pin" type="password" placeholder="PIN" />
+        <button id="btnLoad">読み込む</button>
+        <div id="status"></div>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          <h2>最近の会話</h2>
+          <pre id="events"></pre>
+        </div>
+
+        <div class="card">
+          <h2>語彙（超雑）</h2>
+          <pre id="vocab"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/parent/app.js"></script>
+  </body>
+</html>

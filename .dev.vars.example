@@ -1,0 +1,10 @@
+# Local dev variables for `wrangler dev`
+# Copy to .dev.vars
+#
+# Secrets in production should be set via:
+#   npx wrangler secret put ANTHROPIC_API_KEY
+#
+APP_ENV=local
+PARENT_PIN=1234
+ANTHROPIC_API_KEY=
+LLM_PROVIDER=mock

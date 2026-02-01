@@ -1,0 +1,73 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "my-usagi",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-30",
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  "vars": {
+    "APP_ENV": "dev",
+    "LLM_PROVIDER": "mock"
+  },
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BUNNY_SESSION",
+        "class_name": "BunnySession"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BunnySession"]
+    }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-usagi-db",
+      "database_id": "REPLACE_WITH_UUID",
+      "preview_database_id": "REPLACE_WITH_UUID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "my-usagi-audio"
+    }
+  ],
+
+  "queues": {
+    "producers": [
+      {
+        "binding": "ANALYSIS_QUEUE",
+        "queue": "my-usagi-analysis"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "my-usagi-analysis",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      }
+    ]
+  },
+
+  "triggers": {
+    "crons": [
+      "0 12 * * *"
+    ]
+  }
+}

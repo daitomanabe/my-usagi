@@ -1,0 +1,9 @@
+{
+  "name": "my-usagi",
+  "short_name": "my-usagi",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0b10",
+  "theme_color": "#0b0b10",
+  "icons": []
+}

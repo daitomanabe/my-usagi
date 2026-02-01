@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>my-usagi</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <div class="title">🐰 my-usagi</div>
+        <a class="parent-link" href="/parent/">おとな</a>
+      </header>
+
+      <section class="bunny">
+        <div class="bunny-face" aria-label="bunny">🐰</div>
+        <div id="bunnyText" class="bunny-text">おはなししよう？</div>
+      </section>
+
+      <section class="controls">
+        <button id="btnStart" class="btn primary">🎙️ しゃべる</button>
+        <button id="btnStop" class="btn" disabled>⏹️ おわり</button>
+      </section>
+
+      <section class="debug">
+        <details>
+          <summary>デバッグ</summary>
+          <div class="row">
+            <div class="label">認識:</div>
+            <pre id="transcript"></pre>
+          </div>
+          <div class="row">
+            <div class="label">状態:</div>
+            <pre id="status"></pre>
+          </div>
+        </details>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
