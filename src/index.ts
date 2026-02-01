@@ -11,18 +11,38 @@ import { z } from "zod";
  */
 export interface Env {
   APP_ENV: string;
-  LLM_PROVIDER: "mock" | "anthropic";
+  LLM_PROVIDER: "workers-ai" | "anthropic" | "mock";
 
   ASSETS: Fetcher;
   DB: D1Database;
   R2: R2Bucket;
   ANALYSIS_QUEUE: Queue;
   CONVERSATION_SESSION: DurableObjectNamespace;
+  AI: Ai; // Cloudflare Workers AI binding
 
   // Secrets (use `wrangler secret put`)
   PARENT_PIN?: string;
   ANTHROPIC_API_KEY?: string;
 }
+
+// Cloudflare Workers AI type (simplified)
+interface Ai {
+  run(model: string, input: any): Promise<any>;
+}
+
+// System prompt for child-safe rabbit responses
+const RABBIT_SYSTEM_PROMPT = `あなたは「うさちゃん」という名前のやさしいウサギです。
+3さいのこどもとたのしくおはなしします。
+
+ルール:
+1. ひらがなとカタカナだけつかう
+2. みじかいぶんではなす（20もじいない）
+3. あぶないこと、こわいことはぜったいいわない
+4. こどものことばをほめる
+5. 「〜だよ」「〜ね」などやさしいいいかた
+6. たのしいきもちでこたえる
+
+あなたはこどものいちばんのともだちです。`;
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -163,8 +183,8 @@ router.post("/api/conversation/audio", async (request: Request, env: Env, ctx: E
     customMetadata: { session_id: sessionId, turn_id: turnId, timestamp: timestamp || new Date().toISOString() },
   });
 
-  // Mock ASR (replace with actual ASR service later)
-  const transcription = "[ASR mock] Child said something";
+  // ASR: Transcribe audio using Whisper
+  const transcription = await runWhisperASR(env, audioBuffer);
 
   // Get rabbit response from Durable Object
   const id = env.CONVERSATION_SESSION.idFromName(sessionId);
@@ -488,28 +508,27 @@ export class ConversationSession {
       const metadata = (await this.state.storage.get("metadata")) as
         | { sessionId: string; startedAt: number; childId?: string }
         | undefined;
-      const context = (await this.state.storage.get("context")) as any[] || [];
+      const context = (await this.state.storage.get("context")) as ConversationTurn[] || [];
       const vocabSession = (await this.state.storage.get("vocabularySession")) as
         | { uniqueWords: string[]; newWordsThisSession: string[] }
         | undefined || { uniqueWords: [], newWordsThisSession: [] };
 
-      // Placeholder: rule-based reply until LLM is wired
-      let replyText = "うんうん！";
-      if (childInput) {
-        replyText = `「${childInput}」っていったね。もっとおしえて！`;
-      } else {
-        replyText = "きこえたよ。もういっかい、おはなしして？";
+      // Generate response using LLM (with fallback)
+      let replyText: string;
+      try {
+        replyText = await runLlamaLLM(this.env, childInput, context);
+      } catch (e) {
+        // Fallback to simple response
+        replyText = generateFallbackResponse(childInput);
       }
 
-      // Mock vocabulary detection
+      // Extract vocabulary from child input
       const vocabulary = extractSimpleVocabulary(childInput);
 
       // Update context (keep last 5 turns)
-      const newTurn = {
-        turnId,
+      const newTurn: ConversationTurn = {
         childInput,
         rabbitResponse: replyText,
-        timestamp: Date.now(),
       };
 
       const updatedContext = [...context, newTurn].slice(-5);
@@ -521,8 +540,8 @@ export class ConversationSession {
       vocabSession.newWordsThisSession.push(...newWords);
       await this.state.storage.put("vocabularySession", vocabSession);
 
-      // Mock TTS URL
-      const ttsAudioUrl = `https://r2.example.com/tts/${hashString(replyText)}.mp3`;
+      // Generate TTS URL (placeholder for now)
+      const ttsAudioUrl = await generateTTS(this.env, replyText, sessionId, turnId);
 
       return json({
         response: replyText,
@@ -562,6 +581,131 @@ function hashString(str: string): string {
     hash = hash & hash;
   }
   return Math.abs(hash).toString(36);
+}
+
+// ============================================
+// AI Service Functions (Cloudflare Workers AI)
+// ============================================
+
+/**
+ * ASR: Speech-to-text using Whisper
+ */
+async function runWhisperASR(env: Env, audioBuffer: ArrayBuffer): Promise<string> {
+  try {
+    const response = await env.AI.run("@cf/openai/whisper", {
+      audio: [...new Uint8Array(audioBuffer)],
+    });
+    return response.text || "";
+  } catch (e: any) {
+    console.error("[ASR Error]", e.message);
+    // Fallback to mock if AI fails
+    return "[音声認識できませんでした]";
+  }
+}
+
+/**
+ * LLM: Generate rabbit response using Llama
+ */
+interface ConversationTurn {
+  childInput: string;
+  rabbitResponse: string;
+}
+
+async function runLlamaLLM(env: Env, userMessage: string, context: ConversationTurn[]): Promise<string> {
+  try {
+    // Build messages array with context
+    const messages: { role: string; content: string }[] = [
+      { role: "system", content: RABBIT_SYSTEM_PROMPT },
+    ];
+
+    // Add conversation history (last 5 turns)
+    for (const turn of context.slice(-5)) {
+      messages.push({ role: "user", content: turn.childInput });
+      messages.push({ role: "assistant", content: turn.rabbitResponse });
+    }
+
+    // Add current user message
+    messages.push({ role: "user", content: userMessage || "こんにちは" });
+
+    const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+      messages,
+      max_tokens: 100,
+      temperature: 0.7,
+    });
+
+    // Extract response text
+    const text = response.response || response.generated_text || "";
+
+    // Ensure response is child-safe and short
+    const sanitized = sanitizeResponse(text);
+    return sanitized || "うんうん！たのしいね！";
+  } catch (e: any) {
+    console.error("[LLM Error]", e.message);
+    // Fallback to simple rule-based response
+    return generateFallbackResponse(userMessage);
+  }
+}
+
+/**
+ * Sanitize LLM response for child safety
+ */
+function sanitizeResponse(text: string): string {
+  // Remove any potentially inappropriate content
+  // Keep only hiragana, katakana, and basic punctuation
+  let sanitized = text
+    .replace(/[a-zA-Z0-9]/g, "") // Remove romaji/numbers
+    .replace(/[^\u3040-\u309F\u30A0-\u30FF\u3000-\u303F！？。、〜ー…]/g, "") // Keep only Japanese
+    .trim();
+
+  // Limit length
+  if (sanitized.length > 50) {
+    sanitized = sanitized.substring(0, 47) + "…";
+  }
+
+  return sanitized;
+}
+
+/**
+ * Fallback response when LLM is unavailable
+ */
+function generateFallbackResponse(input: string): string {
+  const responses = [
+    "うんうん！たのしいね！",
+    "そうなんだ！すごいね！",
+    "もっとおしえて！",
+    "わぁ、いいね！",
+    "うさちゃんもうれしい！",
+  ];
+
+  if (input && input.length > 0) {
+    return `「${input.substring(0, 10)}」っていったね！${responses[Math.floor(Math.random() * responses.length)]}`;
+  }
+
+  return responses[Math.floor(Math.random() * responses.length)];
+}
+
+/**
+ * TTS: Text-to-speech (placeholder - Workers AI TTS not yet available for Japanese)
+ * For now, returns a mock URL. In production, integrate with external TTS service.
+ */
+async function generateTTS(env: Env, text: string, sessionId: string, turnId: string): Promise<string> {
+  // Note: As of 2025, Workers AI doesn't have a Japanese TTS model.
+  // Options for production:
+  // 1. Google Cloud TTS API
+  // 2. Azure Cognitive Services
+  // 3. ElevenLabs
+  // 4. VOICEVOX (self-hosted)
+
+  // For now, return a mock URL (client will handle text display as fallback)
+  const hash = hashString(text);
+  const key = `tts/${sessionId}/${turnId}-${hash}.mp3`;
+
+  // In production, generate audio and upload to R2:
+  // const audioData = await externalTTSService.generate(text, "ja-JP");
+  // await env.R2.put(key, audioData, { httpMetadata: { contentType: "audio/mpeg" } });
+
+  // Return mock URL for now
+  return `https://r2.my-usagi.example.com/${key}`;
 }
 
 async function analyzeVocabulary(env: Env, turnId: string, sessionId: string, text: string, timestamp: string) {

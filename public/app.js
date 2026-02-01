@@ -250,6 +250,49 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
+// Network status indicator
+function updateNetworkStatus() {
+  const indicator = document.getElementById("network-status");
+  if (!navigator.onLine) {
+    indicator.textContent = "オフライン";
+    indicator.className = "network-status offline";
+  } else {
+    indicator.textContent = "";
+    indicator.className = "network-status";
+  }
+}
+
+window.addEventListener("online", updateNetworkStatus);
+window.addEventListener("offline", updateNetworkStatus);
+
+// Install prompt
+let deferredPrompt = null;
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+
+  // Show install button after a short delay
+  setTimeout(() => {
+    if (deferredPrompt && !document.querySelector(".install-btn")) {
+      const installBtn = document.createElement("button");
+      installBtn.textContent = "アプリをインストール";
+      installBtn.className = "install-btn";
+      installBtn.addEventListener("click", async () => {
+        if (deferredPrompt) {
+          deferredPrompt.prompt();
+          const { outcome } = await deferredPrompt.userChoice;
+          console.log("Install outcome:", outcome);
+          deferredPrompt = null;
+          installBtn.remove();
+        }
+      });
+      document.body.appendChild(installBtn);
+    }
+  }, 5000);
+});
+
 window.addEventListener("load", async () => {
+  updateNetworkStatus();
   sessionId = await startSession();
 });

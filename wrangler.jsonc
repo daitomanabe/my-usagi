@@ -10,9 +10,13 @@
     "run_worker_first": true
   },
 
+  "ai": {
+    "binding": "AI"
+  },
+
   "vars": {
     "APP_ENV": "dev",
-    "LLM_PROVIDER": "mock"
+    "LLM_PROVIDER": "workers-ai"
   },
 
   "durable_objects": {
