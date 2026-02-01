@@ -2,4 +2,4 @@
 {"id":"task-1769947587-8639","title":"システム設計・API仕様策定（specs/配下）","status":"closed","priority":1,"blocked_by":["task-1769947583-c445"],"created":"2026-02-01T12:06:27.099901+00:00","closed":"2026-02-01T12:12:39.887238+00:00"}
 {"id":"task-1769947590-37e5","title":"Cloudflare Workers バックエンド実装","status":"closed","priority":2,"blocked_by":["task-1769947587-8639"],"created":"2026-02-01T12:06:30.669673+00:00","closed":"2026-02-01T12:44:52.050732+00:00"}
 {"id":"task-1769947594-e08a","title":"PWA フロントエンド実装（子ども向けUI + 親ダッシュボード）","status":"closed","priority":2,"blocked_by":["task-1769947587-8639"],"created":"2026-02-01T12:06:34.647310+00:00","closed":"2026-02-01T12:44:53.182087+00:00"}
-{"id":"task-1769947598-4feb","title":"統合テスト・最終確認","status":"open","priority":3,"blocked_by":["task-1769947590-37e5"],"created":"2026-02-01T12:06:38.610286+00:00"}
+{"id":"task-1769947598-4feb","title":"統合テスト・最終確認","status":"closed","priority":3,"blocked_by":["task-1769947590-37e5"],"created":"2026-02-01T12:06:38.610286+00:00","closed":"2026-02-01T13:17:10.600429+00:00"}
